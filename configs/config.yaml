@@ -1,8 +1,8 @@
 # Default configuration for PredANN music identification from EEG
 
 data:
-  raw_dir: data/raw            # raw NMED-T directory
-  processed_dir: data/processed
+  raw_dir: /Volumes/Untitled/Dataset/NMED-T/Original
+  processed_dir: /Volumes/Untitled/Dataset/NMED-T/Preprocessed
   train_stride: 200            # stride during training (every 200 steps)
   val_stride: 1
   delay_ms: 200                # optimal EEG delay relative to audio onset (Table 2)

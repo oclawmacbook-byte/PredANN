@@ -2,13 +2,14 @@
 Preprocess raw NMED-T data into windowed numpy arrays ready for training.
 
 Usage:
-    python scripts/preprocess_data.py --raw_dir /path/to/nmedt --out_dir data/processed
+    python scripts/preprocess_data.py \
+        --raw_dir /Volumes/Untitled/Dataset/NMED-T/Original \
+        --out_dir /Volumes/Untitled/Dataset/NMED-T/Preprocessed
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -18,9 +19,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.preprocessing import (
     DELAY_SAMPLES,
+    ORIG_SR,
     TARGET_SR,
     TRAIN_STRIDE,
-    VAL_STRIDE,
     downsample_eeg,
     extract_windows,
     load_nmedt_audio,
@@ -33,10 +34,12 @@ from src.preprocessing import (
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--raw_dir", required=True, help="Path to raw NMED-T data directory")
-    p.add_argument("--out_dir", default="data/processed")
+    p.add_argument("--raw_dir", default="/Volumes/Untitled/Dataset/NMED-T/Original",
+                   help="Path to raw NMED-T directory (contains XX_Y_raw.mat files)")
+    p.add_argument("--out_dir", default="/Volumes/Untitled/Dataset/NMED-T/Preprocessed",
+                   help="Output directory for .npy files used by train.py")
     p.add_argument("--subjects", nargs="+", type=int, default=list(range(1, 21)),
-                   help="Subject IDs to process (default: all 20)")
+                   help="Clean subject IDs to process (default: all 20)")
     p.add_argument("--delay_ms", type=int, default=200,
                    help="EEG-to-audio delay in ms (default: 200)")
     p.add_argument("--seed", type=int, default=42)
@@ -55,23 +58,36 @@ def main() -> None:
     all_val_eeg, all_val_audio, all_val_labels = [], [], []
     subject_ids_train, subject_ids_val = [], []
 
+    downsample_factor = ORIG_SR // TARGET_SR  # 1000 // 125 = 8
+
     for subj in args.subjects:
         print(f"Processing subject {subj:02d}...")
         eeg_raw, song_sequence = load_nmedt_eeg(args.raw_dir, subj)
         eeg_ds = downsample_eeg(eeg_raw)
         eeg_norm = normalize_eeg(eeg_ds)
-        eeg_trunc = truncate_to_max_duration(eeg_norm)
+
+        # Decimate song_sequence labels to match downsampled EEG
+        song_seq_ds = song_sequence[::downsample_factor][: eeg_ds.shape[1]]
 
         all_eeg, all_audio, all_labels = [], [], []
-        for song_id in np.unique(song_sequence):
-            song_audio = audio_dict[int(song_id)]
+        for song_id in np.unique(song_seq_ds):
+            mask = song_seq_ds == song_id
+            song_eeg = eeg_norm[:, mask]
+            song_eeg = truncate_to_max_duration(song_eeg)  # truncate per song
+            if int(song_id) not in audio_dict:
+                continue
             eeg_w, audio_w, lbl = extract_windows(
-                eeg_trunc, song_audio, int(song_id),
+                song_eeg, audio_dict[int(song_id)], int(song_id),
                 stride=TRAIN_STRIDE, delay_samples=delay_samples,
             )
-            all_eeg.append(eeg_w)
-            all_audio.append(audio_w)
-            all_labels.append(lbl)
+            if len(eeg_w) > 0:
+                all_eeg.append(eeg_w)
+                all_audio.append(audio_w)
+                all_labels.append(lbl)
+
+        if not all_eeg:
+            print(f"  No windows extracted for subject {subj}, skipping.")
+            continue
 
         eeg_all = np.concatenate(all_eeg)
         audio_all = np.concatenate(all_audio)
@@ -91,6 +107,10 @@ def main() -> None:
         all_val_labels.append(lbl_v)
         subject_ids_val.append(np.full(len(lbl_v), subj, dtype=np.int32))
 
+    if not all_train_eeg:
+        print("No data was processed. Check --raw_dir and subject IDs.")
+        return
+
     np.save(out_dir / "train_eeg.npy", np.concatenate(all_train_eeg))
     np.save(out_dir / "train_audio.npy", np.concatenate(all_train_audio))
     np.save(out_dir / "train_labels.npy", np.concatenate(all_train_labels))
@@ -101,20 +121,22 @@ def main() -> None:
     np.save(out_dir / "val_labels.npy", np.concatenate(all_val_labels))
     np.save(out_dir / "val_subject_ids.npy", np.concatenate(subject_ids_val))
 
+    train_size = int(np.concatenate(all_train_labels).shape[0])
+    val_size = int(np.concatenate(all_val_labels).shape[0])
     meta = {
         "delay_ms": args.delay_ms,
         "delay_samples": delay_samples,
         "seed": args.seed,
         "subjects": args.subjects,
-        "train_size": int(np.concatenate(all_train_labels).shape[0]),
-        "val_size": int(np.concatenate(all_val_labels).shape[0]),
+        "train_size": train_size,
+        "val_size": val_size,
     }
     with open(out_dir / "meta.json", "w") as f:
         json.dump(meta, f, indent=2)
 
     print(f"Saved preprocessed data to {out_dir}")
-    print(f"  Train: {meta['train_size']} windows")
-    print(f"  Val:   {meta['val_size']} windows")
+    print(f"  Train: {train_size} windows")
+    print(f"  Val:   {val_size} windows")
 
 
 if __name__ == "__main__":

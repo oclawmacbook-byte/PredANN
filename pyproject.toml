@@ -5,15 +5,17 @@ description = "EEG-based music identification using PredANN framework"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "torch>=2.0.0",
-    "torchaudio>=2.0.0",
+    "torch==2.2.2",
+    "torchaudio==2.2.2",
+    "torchvision==0.17.2",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
     "scikit-learn>=1.2.0",
     "librosa>=0.10.0",
     "pandas>=2.0.0",
     "matplotlib>=3.7.0",
-    "torchvision>=0.21.0",
+    "mat73>=1.6.0",
+    "h5py>=3.8.0",
 ]
 
 [build-system]
@@ -23,5 +25,21 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src"]
 
+# Platform-specific PyTorch indexes (uv only)
+# macOS (Intel/Apple Silicon): standard PyPI CPU build
+# Linux/Windows: CUDA 12.1 build from pytorch.org
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu121", marker = "sys_platform != 'darwin'" },
+]
+torchaudio = [
+    { index = "pytorch-cu121", marker = "sys_platform != 'darwin'" },
+]
+torchvision = [
+    { index = "pytorch-cu121", marker = "sys_platform != 'darwin'" },
+]
+
 [[tool.uv.index]]
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true
