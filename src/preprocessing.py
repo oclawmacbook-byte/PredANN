@@ -42,25 +42,22 @@ def _extract_songs_from_mat(mat_path: Path, sfreq_default: int = ORIG_SR) -> dic
     """Load one raw NMED-T .mat file and return {song_idx: eeg (128, T)} at ORIG_SR."""
     import h5py
 
-    def _decode(val):
-        if isinstance(val, bytes):
-            return val.decode()
-        return str(val)
+    with h5py.File(str(mat_path), 'r') as f:
+        sfreq = int(f['fs'][0, 0])
+        eeg = np.array(f['X'], dtype=np.float32)  # h5py: (T, 129) — transposed from MATLAB
+        eeg = eeg.T  # -> (129, T)
+        eeg = np.delete(eeg, 128, axis=0)  # remove vertex reference electrode -> (128, T)
 
-    with h5py.File(str(mat_path), "r") as f:
-        sfreq = int(np.array(f['fs']).squeeze())
-        eeg = np.array(f['X'], dtype=np.float32)
-        # h5py returns (time, channels) for MATLAB HDF5; transpose to (channels, time)
-        if eeg.shape[0] > eeg.shape[1]:
-            eeg = eeg.T
-        eeg = np.delete(eeg, 128, axis=0)  # remove electrode 129 (vertex reference)
-
-        din_group = f['DIN_1']
-        # DIN_1 is a 2×N cell array stored as object references
-        refs_row0 = din_group[0]  # trigger label refs
-        refs_row1 = din_group[1]  # onset sample refs
-        triggers = [_decode(np.array(f[r]).squeeze()) for r in refs_row0]
-        onsets = [int(np.array(f[r]).squeeze()) for r in refs_row1]
+        din = f['DIN_1']  # (N, 4) in h5py — each cell is an object reference
+        n_triggers = din.shape[0]
+        triggers = []
+        onsets = []
+        for i in range(n_triggers):
+            name_ref = din[i, 0]
+            name = ''.join(chr(c) for c in f[name_ref][()].flatten())
+            triggers.append(_re.sub(r"\D", "", name))
+            onset_ref = din[i, 1]
+            onsets.append(int(float(f[onset_ref][()].flat[0])))
 
     segments: dict[int, np.ndarray] = {}
     for song_idx, (trigger_id, audio_len_44100) in enumerate(
@@ -123,7 +120,6 @@ def load_nmedt_eeg(data_dir: str | Path, subject_id: int) -> tuple[np.ndarray, n
 
 def _load_audio_from_mat(path: Path, target_sr: int = 22050) -> np.ndarray:
     """Extract audio waveform from a .mat file and resample to target_sr."""
-    import librosa
     import scipy.io
 
     data = scipy.io.loadmat(str(path))
@@ -138,7 +134,28 @@ def _load_audio_from_mat(path: Path, target_sr: int = 22050) -> np.ndarray:
     src_sr = int(np.array(data[sr_keys[0]]).flat[0]) if sr_keys else 44100
 
     if src_sr != target_sr:
-        audio = librosa.resample(audio.astype(np.float32), orig_sr=src_sr, target_sr=target_sr)
+        audio = scipy.signal.resample(audio.astype(np.float32), int(len(audio) * target_sr / src_sr))
+    return audio.astype(np.float32)
+
+
+def _load_audio_file(path: Path, target_sr: int = 22050) -> np.ndarray:
+    """Load an audio file (MP3/WAV/etc.) and resample to target_sr mono."""
+    import audioread
+
+    with audioread.audio_open(str(path)) as f:
+        src_sr = f.samplerate
+        n_channels = f.channels
+        frames = []
+        for block in f:
+            frames.append(np.frombuffer(block, dtype=np.int16))
+
+    audio = np.concatenate(frames).astype(np.float32) / 32768.0
+    if n_channels > 1:
+        audio = audio.reshape(-1, n_channels).mean(axis=1)
+
+    if src_sr != target_sr:
+        audio = scipy.signal.resample(audio, int(len(audio) * target_sr / src_sr))
+
     return audio.astype(np.float32)
 
 
@@ -150,8 +167,6 @@ def load_nmedt_audio(data_dir: str | Path) -> dict[int, np.ndarray]:
     File numbering is 1-based (01 = first song = song index 0).
     Returns {song_idx (0-9): waveform at 22050Hz}.
     """
-    import librosa
-
     data_dir = Path(data_dir)
     audio_dir = data_dir / "audio"
     songs: dict[int, np.ndarray] = {}
@@ -164,16 +179,15 @@ def load_nmedt_audio(data_dir: str | Path) -> dict[int, np.ndarray]:
             list(audio_dir.glob(f"{file_num:02d}.*"))
         )
         if not candidates:
-            raise FileNotFoundError(
-                f"No audio file found for song {song_idx} (file {file_num:02d}) in {audio_dir}"
-            )
+            print(f"  Warning: no audio file for song {song_idx} (file {file_num:02d}) — skipping")
+            continue
         path = candidates[0]
         if path.suffix == ".mat":
             audio = _load_audio_from_mat(path)
         elif path.suffix == ".npy":
             audio = np.load(str(path)).astype(np.float32)
         else:
-            audio, _ = librosa.load(str(path), sr=22050, mono=True)
+            audio = _load_audio_file(path)
         songs[song_idx] = audio
     return songs
 

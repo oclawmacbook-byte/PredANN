@@ -62,7 +62,11 @@ def main() -> None:
 
     for subj in args.subjects:
         print(f"Processing subject {subj:02d}...")
-        eeg_raw, song_sequence = load_nmedt_eeg(args.raw_dir, subj)
+        try:
+            eeg_raw, song_sequence = load_nmedt_eeg(args.raw_dir, subj)
+        except FileNotFoundError as e:
+            print(f"  Skipping: {e}")
+            continue
         eeg_ds = downsample_eeg(eeg_raw)
         eeg_norm = normalize_eeg(eeg_ds)
 
