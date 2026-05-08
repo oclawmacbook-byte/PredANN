@@ -40,20 +40,27 @@ SONG_AUDIO_LENGTHS_44100 = [
 
 def _extract_songs_from_mat(mat_path: Path, sfreq_default: int = ORIG_SR) -> dict[int, np.ndarray]:
     """Load one raw NMED-T .mat file and return {song_idx: eeg (128, T)} at ORIG_SR."""
-    import mat73
-    data = mat73.loadmat(str(mat_path))
-    sfreq = int(data['fs'])
-    eeg = np.array(data['X'], dtype=np.float32)
-    # mat73 returns (channels, time); remove vertex reference electrode
-    if eeg.shape[0] < eeg.shape[1]:
-        pass  # already (channels, time)
-    else:
-        eeg = eeg.T
-    eeg = np.delete(eeg, 128, axis=0)  # remove electrode 129 (vertex reference)
+    import h5py
 
-    din = data['DIN_1']
-    triggers = [_re.sub(r"\D", "", t) for t in din[0]]
-    onsets = [int(o) for o in din[1]]
+    def _decode(val):
+        if isinstance(val, bytes):
+            return val.decode()
+        return str(val)
+
+    with h5py.File(str(mat_path), "r") as f:
+        sfreq = int(np.array(f['fs']).squeeze())
+        eeg = np.array(f['X'], dtype=np.float32)
+        # h5py returns (time, channels) for MATLAB HDF5; transpose to (channels, time)
+        if eeg.shape[0] > eeg.shape[1]:
+            eeg = eeg.T
+        eeg = np.delete(eeg, 128, axis=0)  # remove electrode 129 (vertex reference)
+
+        din_group = f['DIN_1']
+        # DIN_1 is a 2×N cell array stored as object references
+        refs_row0 = din_group[0]  # trigger label refs
+        refs_row1 = din_group[1]  # onset sample refs
+        triggers = [_decode(np.array(f[r]).squeeze()) for r in refs_row0]
+        onsets = [int(np.array(f[r]).squeeze()) for r in refs_row1]
 
     segments: dict[int, np.ndarray] = {}
     for song_idx, (trigger_id, audio_len_44100) in enumerate(
